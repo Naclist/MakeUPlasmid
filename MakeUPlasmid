@@ -1,0 +1,164 @@
+#! /usr/bin/env python
+import sys
+import numpy as np
+import pandas as pd
+from sklearn import svm
+from Bio import SeqIO
+from pentamerlist import PentaMer_list
+import random
+import string
+import os
+import shutil
+
+# from PlasmidCluster import Cluster_info
+
+def count_pentamer(plasmid):  # count pentamer prevalence
+    df = pd.DataFrame()
+    for contig in SeqIO.parse(plasmid, 'fasta'):
+        pentamer_count = 0
+        pentamer_dict = {}
+        pentamer_dict_pct = {}
+        for i in PentaMer_list:
+            pentamer_count += contig.seq.count(i)
+            pentamer_dict[i] = contig.seq.count(i)
+        for j in pentamer_dict.keys():
+            pentamer_dict_pct['contig'] = contig.id
+            pentamer_dict_pct['length'] = len(contig.seq)
+            pentamer_dict_pct[j] = pentamer_dict[j] / pentamer_count
+        df = pd.concat([pd.DataFrame([pentamer_dict_pct]), df])
+        df.index = df['contig']
+        df = df.drop(df.columns[0:2], axis=1)
+        return df.values
+
+
+def ANI_judge(plasmid1, plasmid2):
+    out_file_1 = plasmid1 + '.' + plasmid2.split('.p.fna')[0].split('/')[-1] + '.ani'
+    os.system(
+        'fastANI -q ' + plasmid1 + ' -r ' + plasmid2 + ' -o ' + out_file_1 + ' --fragLen 2000 -t 10 > ' + out_file_1 + '.log 2>&1')
+    ani_1 = 0.0
+    if not os.path.getsize(out_file_1):
+        ani_1 = 0.0
+    else:
+        ani_file = open(out_file_1).readlines()
+        for i in ani_file:
+            ani_1 += float(i.split('\t')[2]) * int(i.split('\t')[3]) / int(i.split('\t')[4])
+    os.remove(out_file_1)
+    out_file_2 = plasmid1 + '.' + plasmid2.split('.p.fna')[0].split('/')[-1] + '.reverse.ani'
+    os.system(
+        'fastANI -q ' + plasmid2 + ' -r ' + plasmid1 + ' -o ' + out_file_2 + ' --fragLen 2000 -t 10 > ' + out_file_2 + '.log 2>&1')
+    ani_2 = 0.0
+    if not os.path.getsize(out_file_2):
+        ani_2 = 0.0
+    else:
+        ani_file = open(out_file_2).readlines()
+        for i in ani_file:
+            ani_2 += float(i.split('\t')[2]) * int(i.split('\t')[3]) / int(i.split('\t')[4])
+    os.remove(out_file_2)
+    os.remove(out_file_1 + '.log')
+    if out_file_1 == out_file_2:
+        pass
+    else:
+        os.remove(out_file_2 + '.log')
+    if ani_2 > ani_1:
+        return ani_1
+    else:
+        return ani_2
+
+
+def SVM_ctg_judge(ctg):  # judge input contig with SVM model
+    ctg_pentamer = count_pentamer(ctg)
+    ctg_belong = clt.predict(ctg_pentamer)[0]  # judge directly
+    ctg_belong_proba = clt.predict_proba(ctg_pentamer)
+    ctg_relation = {}
+    for i in clt.classes_:
+        ctg_relation[i] = ctg_belong_proba[0][i - 1]
+    return ctg_belong, ctg_relation.get(ctg_belong)
+
+
+def length_filter_1(ctg):
+    ctg_len = 0
+    for contig in SeqIO.parse(ctg, 'fasta'):
+        ctg_len += len(contig)
+    ctg_belong, ctg_proba = SVM_ctg_judge(ctg)
+    if ctg_belong == 19:
+        return ctg_belong, 'High possibility'
+    else:
+        if ctg_proba < 0.4:
+            return 'Uniques', 'High possibility'
+        else:
+            clu_max = clu_info.loc[ctg_belong, 'max']
+            if clu_max * 1.4 < ctg_len:
+                return 'Uniques', 'Excessively long sequences'
+            else:
+                if ctg_belong == 18:
+                    highest_adj_ani = 0
+                    highest_adj_ani_plasmid = ''
+                    for i in plasmid_clu_info[18][1]:
+                        if ANI_judge(ctg, i) > highest_adj_ani:
+                            highest_adj_ani = ANI_judge(ctg, i)
+                            highest_adj_ani_plasmid = i
+                    if highest_adj_ani < 10:
+                        return 19, 'Could not cluster with any known plasmid sequences.'
+                    else:
+                        return 18, round(highest_adj_ani, 4), 'Clustered with ' + highest_adj_ani_plasmid
+                else:
+                    count = 0
+                    ani_acc = 0
+                    for i in plasmid_clu_info[ctg_belong][1]:
+                        count += 1
+                        ani_acc += ANI_judge(ctg, i)
+                    if ani_acc / count > 60:
+                        return ctg_belong, round(ctg_proba * 100, 4), 'High possibility'
+                    else:
+                        return ctg_belong, round(ctg_proba * 100, 4), ani_acc / count
+
+
+def Genome_crush(fna):
+    crushed_genome_list = []
+    ctg_info = {}
+    output_ctg = {}
+    random_str = ''.join(random.choice(string.ascii_letters + string.digits) for _ in range(6))
+    os.mkdir('Crushed_' + random_str + fna)
+    input_fna_dict = SeqIO.to_dict(SeqIO.parse(fna, 'fasta'))
+    for contig in SeqIO.parse(fna, 'fasta'):
+        crushed_genome = open(os.path.join('Crushed_' + random_str + fna, contig.id + '.fna'), 'w')
+        print('>' + contig.description + '\n' + contig.seq, file=crushed_genome)
+        crushed_genome_list.append(os.path.join('Crushed_' + random_str + fna, contig.id + '.fna'))
+        crushed_genome.close()
+        ctg_info[contig.id] = length_filter_1(os.path.join('Crushed_' + random_str + fna, contig.id + '.fna'))
+
+    for i in ctg_info.keys():
+        if 'Uniques' in ctg_info.get(i):
+            print(i, ctg_info.get(i)[0], ctg_info.get(i)[1:])
+        else:
+            if ctg_info.get(i)[0] == 19:
+                print(i, ctg_clu_info[ctg_info.get(i)[0]], ctg_info.get(i)[1:])
+            else:
+                print(i, ctg_clu_info[ctg_info.get(i)[0]], ctg_info.get(i)[1:])
+                if ctg_clu_info[ctg_info.get(i)[0]] not in output_ctg.keys():
+                    output_ctg[ctg_clu_info[ctg_info.get(i)[0]]] = [i]
+                else:
+                    output_ctg[ctg_clu_info[ctg_info.get(i)[0]]].append(i)
+    for i in output_ctg.keys():
+        if i == 'Unassigned':
+            count = 1
+            for j in output_ctg[i]:
+                output_seq = open('Unassigned_' + str(count) + '.fna', 'w')
+                print('>' + j + '\n' + input_fna_dict[j].seq, file=output_seq)
+                count += 1
+                print
+                output_seq.close()
+        else:
+            output_seq = open(i + '_in_' + fna, 'w')
+            for j in output_ctg[i]:
+                print('>' + j + '\n' + input_fna_dict[j].seq, file=output_seq)
+            output_seq.close()
+    os.system('rm -rf ' + 'Crushed_' + random_str + fna)
+
+
+if len(sys.argv) < 2 or sys.argv[1] == '--help':
+    print(
+        'Usage: AbNorm MakeUPlasmid query\nOutput: contig\tprediction\n\nExample:\ncontig\tcluster\tpossibility\ncontig1\t1.1\t0.963\n...')
+    sys.exit(1)
+else:
+    Genome_crush(sys.argv[1])
