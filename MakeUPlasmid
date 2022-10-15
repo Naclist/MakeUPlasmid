@@ -9,6 +9,7 @@ import random
 import string
 import os
 import shutil
+from Plasmid_info import plasmid_clu_info, ctg_clu_info
 
 # from PlasmidCluster import Cluster_info
 
