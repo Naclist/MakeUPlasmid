@@ -13,6 +13,13 @@ from Plasmid_info import plasmid_clu_info, ctg_clu_info
 
 # from PlasmidCluster import Cluster_info
 
+pentamer_db = pd.read_csv('all.plasmid.pentamer.svm.txt', sep='\t')  # SVM section
+pentamer_value = pentamer_db.iloc[:, 3:].values
+p_cluster = list(pentamer_db['cluster_code'])
+clt = svm.SVC(probability=True)
+clt.fit(pentamer_value, p_cluster)
+clu_info = pd.read_csv('Clu.info', sep='\t', index_col='Cluster_code')
+
 def count_pentamer(plasmid):  # count pentamer prevalence
     df = pd.DataFrame()
     for contig in SeqIO.parse(plasmid, 'fasta'):
